@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.7
 # ---- dépendances de production ----
-FROM node:22-alpine AS deps
+FROM node:25-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 # ---- image finale ----
-FROM node:22-alpine
+FROM node:25-alpine
 ARG APP_VERSION=dev
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="multipressing" \
