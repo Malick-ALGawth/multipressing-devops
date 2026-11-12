@@ -1,0 +1,46 @@
+name: Vérification de la chaîne DevOps
+
+# Vérifie, à chaque push, tout ce qui peut l'être sans le code applicatif (resté privé) :
+# scripts de déploiement, retour arrière, commande SSH forcée, Compose, Prometheus, Ansible, secrets.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  infra:
+    name: Scripts, Compose, supervision, Ansible
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck des scripts de déploiement
+        run: shellcheck deploy/*.sh test/deploy/*.sh
+      - name: Test du script de déploiement (succès, retour arrière, migration en échec)
+        run: bash test/deploy/test-deploy.sh
+      - name: Test de la commande forcée SSH (la clé de déploiement ne peut rien faire d'autre)
+        run: bash test/deploy/test-gate.sh
+      - name: Validation du fichier Compose
+        run: |
+          cp .env.example .env
+          docker compose --profile monitoring config --quiet
+      - name: Validation de la configuration Prometheus et des alertes
+        run: |
+          docker run --rm -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
+      - name: Ansible-lint
+        run: |
+          python3 -m venv /tmp/al
+          /tmp/al/bin/pip install --quiet ansible==10.6.0 ansible-lint==24.10.0
+          cd ansible && PATH=/tmp/al/bin:$PATH ansible-lint playbooks/site.yml
+
+  secrets:
+    name: Recherche de secrets (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Aucun mot de passe, clé ou jeton dans l'historique Git
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 detect --source /repo --redact --no-banner -v

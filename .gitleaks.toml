@@ -1,0 +1,17 @@
+# Configuration de gitleaks (recherche de secrets en CI) : règles par défaut,
+# plus une liste explicite de valeurs de test et de démonstration qui ne sont pas des secrets.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Valeurs de test, d'exemple et d'usage local uniquement"
+regexes = [
+  '''ci-secret-ci-secret''',
+  '''test-secret-test-secret''',
+  '''secret-local-uniquement-pour-tester''',
+  '''local-seulement''',
+  '''remplacez-''',
+  '''wave_sn_WHS_secret_de_test''',
+  '''pd-master-test''',
+  '''test_private_pd''',
+]

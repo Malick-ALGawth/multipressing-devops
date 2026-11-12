@@ -1,0 +1,19 @@
+# Modèle des secrets d'un environnement. Pour chaque environnement :
+#   cp vault.example.yml inventory/group_vars/production/vault.yml
+#   (remplissez les valeurs avec : openssl rand -hex 32)
+#   ansible-vault encrypt inventory/group_vars/production/vault.yml
+# Ne commitez jamais un vault.yml non chiffré (le .gitignore l'empêche pour les fichiers en clair connus).
+vault_postgres_password: "remplacez-moi"
+vault_session_secret: "remplacez-moi-au-moins-32-caracteres"
+# Clé de chiffrement des secrets 2FA : ne la changez pas (sinon chaque utilisateur doit reconfigurer sa 2FA).
+vault_encryption_key: "remplacez-moi-au-moins-32-caracteres"
+vault_backup_passphrase: "remplacez-moi-et-notez-la-hors-du-serveur"
+vault_grafana_admin_password: "remplacez-moi"
+
+# Copie des sauvegardes hors du serveur (facultatif, stockage compatible S3 : Backblaze B2, Scaleway, OVH, Wasabi...)
+vault_rclone_remote: ""            # ex. "offsite:mon-bucket/multipressing"
+vault_offsite_provider: "Other"
+vault_offsite_endpoint: ""         # ex. "https://s3.fr-par.scw.cloud"
+vault_offsite_region: ""
+vault_offsite_access_key_id: ""
+vault_offsite_secret_access_key: ""

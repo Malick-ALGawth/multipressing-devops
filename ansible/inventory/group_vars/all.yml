@@ -1,0 +1,26 @@
+# Valeurs communes à tous les serveurs. Les secrets sont dans inventory/group_vars/<environnement>/vault.yml (chiffré avec ansible-vault).
+
+# Premier passage : connexion en root (ou l'utilisateur fourni par l'hébergeur).
+# Après le premier passage, SSH root est désactivé : relancez avec -e ansible_user=deploy.
+ansible_user: root
+
+deploy_user: deploy
+# Clés publiques des personnes qui administrent le serveur (accès complet, avec sudo).
+deploy_authorized_keys:
+  - "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+# Clés de GitHub Actions : limitées par une commande forcée à « deploy <tag> » et « rollback ».
+deploy_ci_keys: []
+#  - "ssh-ed25519 AAAA... github-actions-deploy"
+
+app_dir: /opt/multipressing
+timezone: Africa/Dakar
+swap_size_mb: 2048
+ssh_port: 22
+
+# Image publiée par la CI (ghcr.io/<propriétaire du dépôt>/multipressing)
+app_image: ghcr.io/votre-compte/multipressing
+app_tag: latest
+
+backup_keep_days: 30
+backup_hour: "02"
+log_level: info

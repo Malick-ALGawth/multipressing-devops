@@ -1,0 +1,3 @@
+app_env: staging
+app_domain: staging.exemple.com
+backup_keep_days: 7

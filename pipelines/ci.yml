@@ -1,0 +1,121 @@
+# Intégration continue : chaque pull request (et chaque livraison, via cd.yml) passe par ces contrôles.
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Lint, tests, audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mp
+          POSTGRES_PASSWORD: mp
+          POSTGRES_DB: mptest
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mp -d mptest"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://mp:mp@localhost:5432/mptest
+      SESSION_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+      LOG_SILENT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Lint
+        run: npm run lint
+      - name: Tests d'intégration (PostgreSQL réel)
+        run: npm test
+      - name: Audit des dépendances de production
+        run: npm audit --omit=dev --audit-level=high
+
+  infra:
+    name: Scripts, Compose, supervision, Ansible
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck des scripts de déploiement
+        run: shellcheck deploy/*.sh test/deploy/*.sh
+      - name: Test du script de déploiement (succès, retour arrière, migration en échec)
+        run: bash test/deploy/test-deploy.sh
+      - name: Test de la commande forcée SSH (la clé de déploiement ne peut rien faire d'autre)
+        run: bash test/deploy/test-gate.sh
+      - name: Les secrets Ansible sont chiffrés
+        run: |
+          status=0
+          for f in $(git ls-files 'ansible/**/vault.yml'); do
+            head -c 14 "$f" | grep -qF "\$ANSIBLE_VAULT" || { echo "::error file=$f::fichier de secrets non chiffré"; status=1; }
+          done
+          exit $status
+      - name: Validation du fichier Compose
+        run: |
+          cp .env.example .env
+          docker compose --profile monitoring config --quiet
+      - name: Validation de la configuration Prometheus et des alertes
+        run: |
+          docker run --rm -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
+      - name: Ansible-lint
+        run: |
+          # Versions figées ensemble : ansible-lint dépend d'API internes d'ansible-core.
+          python3 -m venv /tmp/al
+          /tmp/al/bin/pip install --quiet ansible==10.6.0 ansible-lint==24.10.0
+          cd ansible && PATH=/tmp/al/bin:$PATH ansible-lint playbooks/site.yml
+
+  secrets:
+    name: Recherche de secrets (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Aucun mot de passe, clé ou jeton dans l'historique Git
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 detect --source /repo --redact --no-banner -v
+
+  image:
+    name: Image Docker et scan de vulnérabilités
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Construction
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: multipressing:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Démarrage de l'image (sans base) — l'application doit s'arrêter proprement avec un message clair
+        run: |
+          out=$(docker run --rm -e SESSION_SECRET=short multipressing:ci 2>&1 || true)
+          echo "$out" | grep -q "SESSION_SECRET" || { echo "$out"; exit 1; }
+      - name: Scan Trivy (vulnérabilités critiques et élevées corrigeables)
+        # Épinglé sur l'empreinte du commit (v0.35.0) : un tag peut être déplacé, pas une empreinte.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: multipressing:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table

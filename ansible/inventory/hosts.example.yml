@@ -1,0 +1,12 @@
+# Copiez ce fichier en hosts.yml et indiquez l'adresse IP de votre VPS.
+all:
+  children:
+    production:
+      hosts:
+        pressing-prod:
+          ansible_host: 203.0.113.10
+    # Un serveur de staging peut être ajouté plus tard (second VPS) :
+    # staging:
+    #   hosts:
+    #     pressing-staging:
+    #       ansible_host: 203.0.113.20

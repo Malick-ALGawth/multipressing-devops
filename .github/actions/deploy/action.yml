@@ -1,0 +1,50 @@
+name: Déployer sur un serveur
+description: Se connecte en SSH au serveur, lance deploy/deploy.sh avec le tag demandé, puis vérifie la version en ligne.
+inputs:
+  host: { description: "Adresse du serveur", required: true }
+  user: { description: "Utilisateur SSH (deploy)", required: true }
+  ssh-key: { description: "Clé privée SSH de déploiement", required: true }
+  known-hosts: { description: "Empreinte du serveur (ssh-keyscan)", required: true }
+  tag: { description: "Tag de l'image à déployer", required: true }
+  domain: { description: "Nom de domaine pour le test final", required: true }
+  registry-token: { description: "Jeton de lecture du registre", required: true }
+runs:
+  using: composite
+  steps:
+    - name: Préparer SSH
+      shell: bash
+      env:
+        SSH_KEY: ${{ inputs.ssh-key }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+      run: |
+        install -m 700 -d ~/.ssh
+        printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+        printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+    - name: Déployer
+      shell: bash
+      env:
+        HOST: ${{ inputs.host }}
+        DUSER: ${{ inputs.user }}
+        TAG: ${{ inputs.tag }}
+        TOKEN: ${{ inputs.registry-token }}
+      run: |
+        # Sur le serveur, cette clé est limitée par une commande forcée (deploy/ssh-gate.sh) :
+        # seule « deploy <tag> <utilisateur> » est acceptée. Le jeton passe par l'entrée standard,
+        # il n'apparaît ni dans les journaux ni dans la liste des processus.
+        printf '%s' "$TOKEN" | ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DUSER@$HOST" "deploy $TAG $GITHUB_ACTOR"
+    - name: Test de fumée depuis Internet
+      shell: bash
+      env:
+        DOMAIN: ${{ inputs.domain }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        for i in $(seq 1 10); do
+          v=$(curl -fsS "https://$DOMAIN/healthz" | jq -r .version || true)
+          [ "$v" = "$TAG" ] && { echo "Version $v en ligne sur https://$DOMAIN"; exit 0; }
+          sleep 5
+        done
+        echo "::error::https://$DOMAIN/healthz ne renvoie pas la version $TAG"; exit 1
+    - name: Nettoyage
+      if: always()
+      shell: bash
+      run: rm -f ~/.ssh/id_deploy

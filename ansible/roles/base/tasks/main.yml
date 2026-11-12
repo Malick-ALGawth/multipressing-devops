@@ -1,0 +1,122 @@
+---
+- name: Mettre à jour le cache et les paquets
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: safe
+    cache_valid_time: 3600
+
+- name: Installer les outils de base et de sécurité
+  ansible.builtin.apt:
+    name: [ufw, fail2ban, unattended-upgrades, apt-listchanges, curl, ca-certificates, gnupg, git, jq, htop]
+    state: present
+
+- name: Régler le fuseau horaire
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+- name: Activer les mises à jour de sécurité automatiques
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    mode: "0644"
+
+- name: Créer un fichier d'échange (utile sur un VPS de 2 Go)
+  ansible.builtin.command: >-
+    sh -c 'fallocate -l {{ swap_size_mb }}M /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile'
+  args:
+    creates: /swapfile
+  when: swap_size_mb | int > 0
+
+- name: Rendre le fichier d'échange permanent
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: /swapfile none swap sw 0 0
+  when: swap_size_mb | int > 0
+
+- name: Créer l'utilisateur de déploiement
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    groups: [sudo]
+    append: true
+
+- name: Créer le dossier SSH de l'utilisateur de déploiement
+  ansible.builtin.file:
+    path: "/home/{{ deploy_user }}/.ssh"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0700"
+
+- name: Autoriser les clés SSH (administrateurs complets, GitHub Actions limité au déploiement)
+  ansible.builtin.template:
+    src: authorized_keys.j2
+    dest: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600"
+
+- name: Sudo sans mot de passe pour l'utilisateur de déploiement (connexion par clé uniquement)
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-{{ deploy_user }}
+    content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    mode: "0440"
+    validate: visudo -cf %s
+
+- name: Durcir SSH (pas de root, pas de mot de passe)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-durcissement.conf
+    content: |
+      Port {{ ssh_port }}
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      MaxAuthTries 3
+      LoginGraceTime 30
+      X11Forwarding no
+      AllowUsers {{ deploy_user }}
+    mode: "0644"
+    validate: sshd -t -f %s
+  notify: Redémarrer SSH
+
+- name: Pare-feu - politique par défaut
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: incoming, policy: deny }
+    - { direction: outgoing, policy: allow }
+
+- name: Pare-feu - ouvrir SSH, HTTP et HTTPS
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: ["{{ ssh_port }}", "80", "443"]
+
+- name: Pare-feu - limiter les tentatives SSH
+  community.general.ufw:
+    rule: limit
+    port: "{{ ssh_port }}"
+    proto: tcp
+
+- name: Activer le pare-feu
+  community.general.ufw:
+    state: enabled
+
+- name: Configurer fail2ban pour SSH
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/sshd.local
+    content: |
+      [sshd]
+      enabled = true
+      port = {{ ssh_port }}
+      maxretry = 5
+      findtime = 10m
+      bantime = 1h
+    mode: "0644"
+  notify: Redémarrer fail2ban

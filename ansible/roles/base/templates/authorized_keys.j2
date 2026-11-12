@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# Administrateurs : accès complet.
+{% for k in deploy_authorized_keys %}
+{{ k }}
+{% endfor %}
+# GitHub Actions : uniquement « deploy <tag> <utilisateur> » ou « rollback » (voir ssh-gate.sh).
+{% for k in deploy_ci_keys %}
+command="/usr/local/bin/multipressing-ssh-gate",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc {{ k }}
+{% endfor %}

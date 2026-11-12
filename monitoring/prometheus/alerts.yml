@@ -1,0 +1,54 @@
+groups:
+  - name: multipressing
+    rules:
+      - alert: ApplicationIndisponible
+        expr: up{job="multipressing"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "L'application ne répond plus aux sondes de supervision"
+
+      - alert: TauxErreursServeurEleve
+        expr: |
+          sum(rate(http_request_duration_seconds_count{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_request_duration_seconds_count[5m])), 0.001) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Plus de 5 % des requêtes finissent en erreur serveur"
+
+      - alert: ReponsesLentes
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route!="statique"}[10m]))) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "95 % des requêtes prennent plus d'1 seconde"
+
+      - alert: TentativesConnexionSuspectes
+        expr: increase(mp_login_failures_total[15m]) > 30
+        labels: { severity: warning }
+        annotations:
+          summary: "Plus de 30 échecs de connexion en 15 minutes"
+
+      - alert: PoolBaseSature
+        expr: pg_pool_connections{state="waiting"} > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Des requêtes attendent une connexion à la base"
+
+  - name: serveur
+    rules:
+      - alert: DisquePresquePlein
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="rootfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="rootfs"}) < 0.15
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Moins de 15 % d'espace disque libre"
+
+      - alert: MemoireFaible
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Moins de 10 % de mémoire disponible"

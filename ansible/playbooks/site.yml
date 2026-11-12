@@ -1,0 +1,14 @@
+---
+# Prépare un VPS Ubuntu de zéro et installe Multipressing.
+#   ansible-playbook playbooks/site.yml --limit production --ask-vault-pass
+# Rejouable sans risque : chaque tâche ne change que ce qui doit l'être.
+- name: Préparer et sécuriser le serveur, puis installer Multipressing
+  hosts: all
+  become: true
+  roles:
+    - role: base
+      tags: [base]
+    - role: docker
+      tags: [docker]
+    - role: app
+      tags: [app]

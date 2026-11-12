@@ -1,0 +1,159 @@
+# Livraison continue :
+#  - fusion sur main          -> image sha-xxxxxxx publiée sur GHCR (+ staging automatique si STAGING_ENABLED=true)
+#  - tag vX.Y.Z (release)     -> image vX.Y.Z -> déploiement en production après approbation
+#  - lancement manuel         -> redéploiement d'un tag existant (ex. retour arrière) dans l'environnement choisi
+name: CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environnement
+        type: choice
+        options: [production, staging]
+        required: true
+      tag:
+        description: Tag d'image déjà publié (ex. v1.2.0 ou sha-3f2a9c1)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    if: github.event_name != 'workflow_dispatch'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publier l'image
+    if: github.event_name != 'workflow_dispatch'
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        name: Calcul du tag
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag="$GITHUB_REF_NAME"; extra="latest"; else tag="sha-${GITHUB_SHA::7}"; extra="main"; fi
+          {
+            echo "image=ghcr.io/$owner/multipressing"
+            echo "tag=$tag"
+            echo "tags=ghcr.io/$owner/multipressing:$tag,ghcr.io/$owner/multipressing:$extra"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.tag }}
+            GIT_SHA=${{ github.sha }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Les attestations GitHub ne sont pas disponibles pour un dépôt privé de compte personnel.
+      # La provenance et le SBOM restent attachés à l'image par docker/build-push-action.
+      - name: Attestation de provenance
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  deploy-staging:
+    name: Déployer en staging
+    needs: publish
+    if: github.ref == 'refs/heads/main' && vars.STAGING_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment:
+      name: staging
+      url: https://${{ vars.APP_DOMAIN }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          user: ${{ vars.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          known-hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          tag: ${{ needs.publish.outputs.tag }}
+          domain: ${{ vars.APP_DOMAIN }}
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-production:
+    name: Déployer en production
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    # Configurez « Required reviewers » sur l'environnement production : le déploiement attend votre approbation.
+    environment:
+      name: production
+      url: https://${{ vars.APP_DOMAIN }}
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          user: ${{ vars.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          known-hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          tag: ${{ needs.publish.outputs.tag }}
+          domain: ${{ vars.APP_DOMAIN }}
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publier la release GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag || gh release edit "$GITHUB_REF_NAME" --draft=false
+
+  redeploy:
+    name: Redéployer un tag existant
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://${{ vars.APP_DOMAIN }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          user: ${{ vars.DEPLOY_USER }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          known-hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          tag: ${{ inputs.tag }}
+          domain: ${{ vars.APP_DOMAIN }}
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
